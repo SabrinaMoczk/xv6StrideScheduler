@@ -10,7 +10,9 @@
 int
 sys_fork(void)
 {
-  return fork();
+  int tickets;
+  argint(0, &tickets);
+  return fork(tickets);
 }
 
 int

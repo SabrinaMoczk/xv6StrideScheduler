@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "heap.h"
 
 struct {
   struct spinlock lock;
@@ -19,6 +20,9 @@ extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
+int last = 0; // Variável de controle para o último elemento da heap
+struct proc *heap[NPROC+1]; // Heap de referências para processos
 
 void
 pinit(void)
@@ -85,7 +89,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -109,7 +113,11 @@ userinit(void)
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
 
+  p->pass = 0; // Zera o passo
+  p->tickets = DEFAULT; //Atribui quantidade default de tickets
+  p->stride = CONST/p->tickets; // Calcula o stride;
   p->state = RUNNABLE;
+  p->position = insert(p, ++last, heap); // Insere na heap salvando o indice
 
   release(&ptable.lock);
 }
@@ -138,7 +146,7 @@ growproc(int n)
 // Sets up stack to return as if from system call.
 // Caller must set state of returned proc to RUNNABLE.
 int
-fork(void)
+fork(int tickets)
 {
   int i, pid;
   struct proc *np;
@@ -173,7 +181,12 @@ fork(void)
 
   acquire(&ptable.lock);
 
+  if(tickets <= 0) np->tickets = DEFAULT; // Se tickets = 0, recebe a quantia DEFAULT de tickets
+  else np->tickets = tickets; // Se não, recebe o valor passado como parametro
+  np->pass = 0; // Zera o passo
+  np->stride = CONST/np->tickets; // Calcula o stride;
   np->state = RUNNABLE;
+  np->position = insert(np, ++last, heap); // Insere na heap salvando o indice
 
   release(&ptable.lock);
 
@@ -287,22 +300,25 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+    if(last > 0){ //Caso a heap não esteja vazia
+      p = extract(1, heap, last--); //Extrai o de menor passo
+      if(p->state == RUNNABLE){
+        p->pass = p->pass + p->stride;  //Acumula a passada no passo
+        p->scheduled++; //Conta como escalonad (Para teste)
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-      swtch(&cpu->scheduler, p->context);
-      switchkvm();
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        proc = p;
+        switchuvm(p);
+        p->state = RUNNING;
+        swtch(&cpu->scheduler, p->context);
+        switchkvm();
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      proc = 0;
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        proc = 0;
+      }
     }
     release(&ptable.lock);
 
@@ -339,6 +355,7 @@ void
 yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
+  proc->position = insert(proc, ++last, heap); //Insere processo novamente na heap
   proc->state = RUNNABLE;
   sched();
   release(&ptable.lock);
@@ -389,6 +406,8 @@ sleep(void *chan, struct spinlock *lk)
 
   // Go to sleep.
   proc->chan = chan;
+  // Caso o processo a ir dormir estiver RUNNABLE o remove da heap
+  if(proc->state == RUNNABLE) extract(proc->position, heap, last--);
   proc->state = SLEEPING;
   sched();
 
@@ -411,8 +430,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      p->position = insert(p, ++last, heap); //Insere processos que acordaram na heap
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -436,6 +457,7 @@ kill(int pid)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
       p->killed = 1;
+      if(p->state == RUNNABLE) extract(p->position, heap, last--); //Caso o processo a ser morto estiver na heap, o remove
       // Wake process from sleep if necessary.
       if(p->state == SLEEPING)
         p->state = RUNNABLE;
@@ -465,7 +487,7 @@ procdump(void)
   int i;
   struct proc *p;
   char *state;
-  uint pc[10];
+  //uint pc[10];
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->state == UNUSED)
@@ -474,12 +496,16 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    cprintf("%d %s %s", p->pid, state, p->name);
-    if(p->state == SLEEPING){
+      cprintf("pid: %d state: %s name: %s tickets: %d stride: %d pass: %d scheduled: %d\n", p->pid, state, p->name, p->tickets, p->stride, p->pass, p->scheduled);
+    /*if(p->state == SLEEPING){
       getcallerpcs((uint*)p->context->ebp+2, pc);
       for(i=0; i<10 && pc[i] != 0; i++)
         cprintf(" %p", pc[i]);
-    }
-    cprintf("\n");
+    }*/
+    //imprime a heap
   }
+  cprintf("\nHEAP: \n");
+  for(i=1; i <= last; i++)
+  cprintf("%d ", heap[i]->pass);
+  cprintf("\n");
 }

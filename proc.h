@@ -1,3 +1,6 @@
+#define CONST 10000 // Constante de divisão para calcular os strides
+#define DEFAULT 50 // Quantidade default de tickets
+
 // Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
@@ -63,6 +66,11 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int stride;                  // Passo, valor acumulado das passadas
+  int pass;                    // Passada, valor que acumula a cada Passo
+  int tickets;                 // Número de bilhetes que definem o tamanho da passadas
+  int position;                // Posição do processo na heap
+  int scheduled;                    // Quantia de vezes em que o processo foi escalonado (Para teste)
 };
 
 // Process memory is laid out contiguously, low addresses first:
